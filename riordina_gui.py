@@ -70,6 +70,16 @@ def all_known_categories(items) -> list[str]:
 
 
 # ------------------------------------------------------------------ app
+def _moved_from(point: core.RestorePoint) -> set[str]:
+    """Nomi dei file che un riordino ha spostato (annullandolo tornano a posto)."""
+    try:
+        import json
+        data = json.loads(point.path.read_text(encoding="utf-8"))
+        return {Path(m["da"]).name for m in data.get("spostamenti", [])}
+    except Exception:
+        return set()
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -184,7 +194,7 @@ class App:
         self.progress = ttk.Progressbar(foot, mode="determinate", length=180)
         self.btn_apply = ttk.Button(foot, text="✨  Riordina ora", style="Accent.TButton", command=self.apply)
         self.btn_apply.pack(side="right", padx=(8, 0))
-        self.btn_undo = ttk.Button(foot, text="↩  Annulla ultimo riordino", command=self.undo)
+        self.btn_undo = ttk.Button(foot, text="🕘  Torna indietro…", command=self.open_history)
         self.btn_undo.pack(side="right", padx=4)
         self.btn_admin = ttk.Button(foot, text="🛡  Riapri come amministratore", command=self.relaunch_admin)
 
@@ -453,12 +463,9 @@ class App:
                 elif kind == "applied":
                     self.set_busy(False)
                     self.after_apply(*msg[1:])
-                elif kind == "undone":
+                elif kind == "restored":
                     self.set_busy(False)
-                    ok, skipped, when = msg[1]
-                    messagebox.showinfo(core.APP_NAME, f"Annullato il riordino del {when.replace('T', ' alle ')}.\n\n"
-                                        f"{ok} elementi rimessi al loro posto" + (f", {skipped} saltati." if skipped else "."))
-                    self.analyze()
+                    self.after_restore(*msg[1:])
                 elif kind == "error":
                     self.set_busy(False)
                     messagebox.showerror(core.APP_NAME, msg[1])
@@ -526,7 +533,7 @@ class App:
     def update_buttons(self):
         if self.busy:
             return
-        self.btn_undo.configure(state="normal" if core.last_log() else "disabled")
+        self.btn_undo.configure(state="normal" if core.list_points() else "disabled")
         self.btn_apply.configure(state="normal" if any(it.moves for it in self.items) else "disabled")
         needs_admin = any(it.public and it.moves for it in self.items) and not core.is_admin()
         if needs_admin and not self.btn_admin.winfo_ismapped():
@@ -930,6 +937,7 @@ class App:
         if not messagebox.askyesno(core.APP_NAME, f"Spostare nel Cestino questi {len(items)} elementi?\n\n{names}\n\n"
                                    "Potrai recuperarli dal Cestino di Windows."):
             return
+        core.save_snapshot(self.root_dir, f"Prima di mandare nel Cestino {len(items)} elementi")
         ok, errors = core.send_to_recycle_bin([it.path for it in items])
         msg = f"{ok} elementi spostati nel Cestino."
         if errors:
@@ -1032,18 +1040,146 @@ class App:
                 msg += "\n\nPer quelli del Desktop pubblico usa “Riapri come amministratore”."
             else:
                 msg += "\n\nDi solito succede se il file è aperto in un altro programma."
-        msg += "\n\nSe qualcosa non ti piace: “Annulla ultimo riordino”."
+        msg += ("\n\nHo salvato l'istante prima del riordino (anche la posizione delle icone): "
+                "se qualcosa non ti piace usa “🕘 Torna indietro”.")
         messagebox.showinfo(core.APP_NAME, msg)
         self.analyze()
 
-    def undo(self):
-        log = core.last_log()
-        if not log:
-            return
-        if not messagebox.askyesno(core.APP_NAME, "Rimetto tutti i file dell'ultimo riordino dove erano prima?"):
-            return
-        self.set_busy(True, "Annullo l'ultimo riordino…")
-        threading.Thread(target=lambda: self.q.put(("undone", core.undo_last())), daemon=True).start()
+    # -------------------------------------------------------------- torna indietro
+    def open_history(self):
+        """Finestra con i punti di ripristino: scegli un istante e ci si torna."""
+        win = tk.Toplevel(self.root)
+        win.title("Torna indietro")
+        win.configure(bg=CARD)
+        win.transient(self.root)
+        w, h = int(self.root.winfo_width() * 0.75), int(self.root.winfo_height() * 0.75)
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
+        win.geometry(f"{w}x{h}+{x}+{y}")
+        try:
+            win.iconbitmap(default=str(Path(__file__).resolve().parent / "riordina.ico"))
+        except tk.TclError:
+            pass
+
+        head = tk.Frame(win, bg=CARD)
+        head.pack(fill="x", padx=22, pady=(18, 8))
+        tk.Label(head, text="🕘 Torna indietro nel tempo", bg=CARD, fg=TEXT, font=(FONT, 15, "bold")).pack(anchor="w")
+        tk.Label(head, text="Prima di ogni riordino salvo l'istante: cosa c'era sul Desktop e dove stava ogni icona. "
+                 "Scegli un momento: annullo i riordini fatti dopo e rimetto le icone dov'erano.",
+                 bg=CARD, fg=MUTED, font=FS, justify="left", wraplength=w - 60).pack(anchor="w", pady=(2, 0))
+
+        foot = tk.Frame(win, bg=CARD)
+        foot.pack(side="bottom", fill="x", padx=22, pady=14)
+        body = ttk.PanedWindow(win, orient="horizontal")
+        body.pack(fill="both", expand=True, padx=22)
+
+        left = ttk.Frame(body, style="Card.TFrame")
+        tree = ttk.Treeview(left, columns=("when", "what", "state"), show="headings", selectmode="browse")
+        for col, title, width in (("when", "Quando", 185), ("what", "Cosa", 280), ("state", "Stato", 90)):
+            tree.heading(col, text=title, anchor="w")
+            tree.column(col, width=width, anchor="w", stretch=(col == "what"))
+        tree.tag_configure("undone", foreground="#a3a6b8")
+        tree.pack(fill="both", expand=True)
+        body.add(left, weight=3)
+        detail = tk.Text(body, wrap="word", bg="#f7f7fb", fg=TEXT, relief="flat", font=(FONT, 9),
+                         padx=12, pady=10, borderwidth=0, highlightthickness=0)
+        body.add(detail, weight=2)
+
+        points: list[core.RestorePoint] = []
+
+        def show(*_):
+            detail.configure(state="normal")
+            detail.delete("1.0", "end")
+            sel = tree.selection()
+            if not sel:
+                detail.insert("1.0", "Nessun punto salvato per ora.\n\nIl primo viene creato in automatico "
+                                     "al prossimo riordino, oppure premi “📸 Salva l'istante attuale”.")
+                btn_go.configure(state="disabled")
+            else:
+                p = points[int(sel[0])]
+                undo = core.to_undo_for(p)
+                coming_back = set().union(*(_moved_from(u) for u in undo)) if undo else set()
+                root = Path(p.root) if p.root else None
+                lines = [p.note, p.when.strftime("%d/%m/%Y alle %H:%M:%S"), "", "Tornando a questo istante:"]
+                if undo:
+                    n = sum(u.moves for u in undo)
+                    lines.append(f"• annullo {len(undo)} riordin{'o' if len(undo) == 1 else 'i'}: "
+                                 f"{n} elementi tornano al loro posto")
+                else:
+                    lines.append("• nessun riordino da annullare")
+                lines.append(f"• rimetto {len(p.icons)} icone nella posizione di allora" if p.icons
+                             else "• (posizione delle icone non salvata per questo punto)")
+                lines += ["", f"Com'era in quel momento ({len(p.before)} elementi):"]
+                for name in p.before:
+                    gone = root is not None and not (root / name).exists() and name not in coming_back
+                    lines.append(f"  {'✗' if gone else '•'} {name}" + ("   (non c'è più)" if gone else ""))
+                detail.insert("1.0", "\n".join(lines))
+                btn_go.configure(state="normal")
+            detail.configure(state="disabled")
+
+        def fill():
+            nonlocal points
+            points = list(reversed(core.list_points()))
+            tree.delete(*tree.get_children())
+            for i, p in enumerate(points):
+                icon = "🧹" if p.kind == "riordino" else "📸"
+                state = "annullato" if p.undone else ("fatto" if p.kind == "riordino" else "—")
+                tree.insert("", "end", iid=str(i), values=(p.when.strftime("%d/%m/%Y  %H:%M:%S"),
+                                                           f"{icon}  {p.note}", state),
+                            tags=("undone",) if p.undone else ())
+            if points:
+                tree.selection_set("0")
+            show()
+
+        def go():
+            sel = tree.selection()
+            if not sel:
+                return
+            p = points[int(sel[0])]
+            undo = core.to_undo_for(p)
+            what = (f"annullo {len(undo)} riordin{'o' if len(undo) == 1 else 'i'} "
+                    f"({sum(u.moves for u in undo)} elementi tornano dov'erano) e " if undo else "")
+            if not messagebox.askyesno("Torna indietro", f"Torno all'istante del {p.when:%d/%m/%Y %H:%M}:\n"
+                                       f"{what}rimetto le icone come erano.\n\nProcedo?", parent=win):
+                return
+            win.destroy()
+            self.set_busy(True, "Torno indietro…")
+            threading.Thread(target=lambda: self.q.put(("restored", core.restore_to(p), p)), daemon=True).start()
+
+        def snap():
+            core.save_snapshot(self.root_dir)
+            fill()
+            self.update_buttons()
+
+        btn_go = ttk.Button(foot, text="↩  Torna a questo istante", style="Accent.TButton", command=go)
+        btn_go.pack(side="right")
+        ttk.Button(foot, text="Chiudi", command=win.destroy).pack(side="right", padx=8)
+        ttk.Button(foot, text="📸  Salva l'istante attuale", command=snap).pack(side="left")
+        tk.Label(foot, text="I file mandati nel Cestino si recuperano dal Cestino di Windows.",
+                 bg=CARD, fg=MUTED, font=FS).pack(side="left", padx=12)
+        tree.bind("<<TreeviewSelect>>", show)
+        tree.bind("<Double-1>", lambda e: go())
+        self.history_win = win
+        fill()
+        win.grab_set()
+
+    def after_restore(self, res: dict, p: core.RestorePoint):
+        lines = [f"Fatto: sei tornato all'istante del {p.when:%d/%m/%Y %H:%M}.", ""]
+        if res["undone"]:
+            lines.append(f"• {res['ok']} elementi rimessi al loro posto"
+                         + (f" ({res['skipped']} saltati: non erano più dove li avevo messi)" if res["skipped"] else ""))
+        if res["icons_total"]:
+            if res["auto_arrange"]:
+                lines.append("• Sul Desktop è attiva la disposizione automatica: Windows rimette le icone da solo. "
+                             "Per poterle posizionare: tasto destro sul Desktop → Visualizza → togli "
+                             "“Disponi icone automaticamente”, poi torna di nuovo a questo istante.")
+            else:
+                lines.append(f"• {res['icons']} di {res['icons_total']} icone rimesse dov'erano")
+        if res["missing"]:
+            names = ", ".join(res["missing"][:6]) + ("…" if len(res["missing"]) > 6 else "")
+            lines.append(f"• {len(res['missing'])} elementi di allora non ci sono più (eliminati o nel Cestino): {names}")
+        messagebox.showinfo(core.APP_NAME, "\n".join(lines))
+        self.analyze()
 
     def relaunch_admin(self):
         exe = Path(sys.executable)

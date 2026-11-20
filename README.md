@@ -42,7 +42,11 @@ scarica `Riordina-Installa.exe` e fai doppio clic (non serve Python). L'exe non 
    lasciarlo sul Desktop 📌 o rinominare una cartella. Le scelte vengono ricordate.
 3. **Consigli**: collegamenti doppi o rotti, stesso gioco su due piattaforme, zip già estratti,
    installer, file vuoti, vecchi o molto grandi, cartelle sparse.
-4. **Riordina ora** sposta i file; **Annulla ultimo riordino** rimette tutto com'era.
+4. **Riordina ora** sposta i file. Subito prima salva l'istante: cosa c'era sul Desktop e la
+   **posizione di ogni icona**.
+5. **🕘 Torna indietro** apre la cronologia: scegli un istante e il programma annulla tutti i riordini
+   fatti dopo e rimette le icone esattamente dov'erano. Con **📸 Salva l'istante attuale** puoi creare
+   un punto di ripristino quando vuoi (viene creato anche prima di mandare file nel Cestino).
 
 Come classifica:
 - collegamenti `.lnk` letti direttamente (eseguibile + argomenti), `.url` dallo schema (`steam://`, `uplay://`…);
@@ -62,6 +66,7 @@ Come classifica:
 | `riordina_desktop.pyw` | avvio senza terminale (doppio clic / collegamento) |
 | `riordina_gui.py` | interfaccia grafica (tkinter) |
 | `riordina_core.py` | motore: scansione, regole, consigli, spostamenti, annulla. `python riordina_core.py` stampa solo l'anteprima |
+| `desktop_icons.py` | legge e rimette la posizione delle icone sul Desktop (ctypes) |
 | `installa.ps1` | installazione con un comando (Python + download + collegamenti + "App installate") |
 | `installa.py` | punto d'ingresso dell'exe: si installa, apre l'app, `--disinstalla` |
 | `strumenti/collegamento.py` | disegna `riordina.ico`, crea i collegamenti Desktop/Start, `--disinstalla` |

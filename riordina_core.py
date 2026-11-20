@@ -35,7 +35,7 @@ except ImportError:
     PdfReader = None
 
 APP_NAME = "Riordina Desktop"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 FROZEN = getattr(sys, "frozen", False)  # True dentro l'exe di PyInstaller
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "RiordinaDesktop"
@@ -750,6 +750,9 @@ def free_path(dest: Path) -> Path:
 
 def apply_moves(items: list[Item], root: Path, single_folder: bool, docs_to_documents: bool,
                 progress=None) -> tuple[list[dict], list[tuple[str, str]], Path | None]:
+    """Sposta gli elementi. Prima salva l'istante (elenco + posizione icone) per poter tornare indietro."""
+    started = datetime.now()
+    state = capture_state(root)
     moves, errors, created = [], [], []
     todo = [it for it in items if it.moves]
     for i, it in enumerate(todo, 1):
@@ -776,28 +779,79 @@ def apply_moves(items: list[Item], root: Path, single_folder: bool, docs_to_docu
             errors.append((it.name, f"{type(e).__name__}: {e}"))
     log = None
     if moves:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log = LOG_DIR / f"riordino_{datetime.now():%Y%m%d_%H%M%S}.json"
-        log.write_text(json.dumps({"quando": datetime.now().isoformat(timespec="seconds"),
-                                   "cartella": str(root), "spostamenti": moves,
-                                   "cartelle_create": created}, ensure_ascii=False, indent=1),
-                       encoding="utf-8")
+        log = _write_point("riordino", root, state, started, {
+            "nota": f"Riordino di {len(moves)} elementi", "spostamenti": moves, "cartelle_create": created})
     return moves, errors, log
 
 
-def last_log() -> Path | None:
-    logs = sorted(LOG_DIR.glob("riordino_*.json")) if LOG_DIR.exists() else []
-    logs = [l for l in logs if not l.name.endswith(".annullato.json")]
-    return logs[-1] if logs else None
+# ============================================================ punti di ripristino ("torna indietro")
+@dataclass
+class RestorePoint:
+    path: Path
+    when: datetime
+    kind: str                 # "riordino" (con spostamenti) | "istantanea" (solo foto del Desktop)
+    note: str
+    moves: int
+    undone: bool              # riordino gia' annullato
+    before: list = field(default_factory=list)   # cosa c'era nella cartella in quel momento
+    icons: dict = field(default_factory=dict)    # posizione delle icone sul Desktop
+    root: str = ""
 
 
-def undo_last() -> tuple[int, int, str]:
-    log = last_log()
-    if not log:
-        return 0, 0, ""
+def capture_state(root: Path) -> dict:
+    """Foto dell'istante: elementi presenti e (sul Desktop) posizione di ogni icona."""
+    try:
+        names = sorted(p.name for p in root.iterdir()
+                       if p.name.lower() not in SKIP_NAMES and not is_hidden_or_system(p))
+    except OSError:
+        names = []
+    icons = None
+    try:
+        if root.resolve() == DESKTOP.resolve():
+            import desktop_icons
+            icons = desktop_icons.get_positions()
+    except Exception:
+        icons = None
+    return {"prima": names, "icone": icons or {}}
+
+
+def _write_point(kind: str, root: Path, state: dict, when: datetime, extra: dict) -> Path:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    path = LOG_DIR / f"{kind}_{when:%Y%m%d_%H%M%S_%f}.json"
+    data = {"tipo": kind, "quando": when.isoformat(timespec="microseconds"), "cartella": str(root),
+            **state, **extra}
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    return path
+
+
+def save_snapshot(root: Path, note: str = "Istante salvato a mano") -> Path:
+    return _write_point("istantanea", root, capture_state(root), datetime.now(),
+                        {"nota": note, "spostamenti": [], "cartelle_create": []})
+
+
+def list_points() -> list[RestorePoint]:
+    """Tutti i punti di ripristino, dal piu' vecchio al piu' recente."""
+    points = []
+    for f in (LOG_DIR.glob("*.json") if LOG_DIR.exists() else []):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+            kind = d.get("tipo", "riordino")
+            points.append(RestorePoint(
+                path=f, when=datetime.fromisoformat(d["quando"]), kind=kind,
+                note=d.get("nota") or (f"Riordino di {len(d.get('spostamenti', []))} elementi"
+                                       if kind == "riordino" else "Istante salvato"),
+                moves=len(d.get("spostamenti", [])), undone=f.name.endswith(".annullato.json"),
+                before=d.get("prima", []), icons=d.get("icone") or {}, root=d.get("cartella", "")))
+        except Exception:
+            continue
+    return sorted(points, key=lambda p: p.when)
+
+
+def _undo_file(log: Path) -> tuple[int, int]:
+    """Annulla un singolo riordino (rimette i file dov'erano)."""
     data = json.loads(log.read_text(encoding="utf-8"))
     ok = skipped = 0
-    for m in reversed(data["spostamenti"]):
+    for m in reversed(data.get("spostamenti", [])):
         src, dst = Path(m["da"]), Path(m["a"])
         try:
             if dst.exists() and not src.exists():
@@ -815,7 +869,48 @@ def undo_last() -> tuple[int, int, str]:
         except OSError:
             pass
     log.rename(log.with_name(log.stem + ".annullato.json"))
-    return ok, skipped, data.get("quando", "")
+    return ok, skipped
+
+
+def to_undo_for(point: RestorePoint) -> list[RestorePoint]:
+    """I riordini da annullare per tornare all'istante `point` (lui compreso, se e' un riordino)."""
+    return [p for p in list_points() if p.kind == "riordino" and not p.undone and p.when >= point.when]
+
+
+def restore_to(point: RestorePoint) -> dict:
+    """Torna all'istante salvato: annulla i riordini successivi (dal piu' recente) e rimette le icone."""
+    undo = to_undo_for(point)
+    ok = skipped = 0
+    for p in reversed(undo):
+        o, s = _undo_file(p.path)
+        ok, skipped = ok + o, skipped + s
+    icons = 0
+    auto = False
+    if point.icons:
+        try:
+            import desktop_icons
+            auto = desktop_icons.auto_arrange_on()
+            icons = desktop_icons.set_positions(point.icons)
+        except Exception:
+            icons = 0
+    root = Path(point.root) if point.root else None
+    missing = [n for n in point.before if root and not (root / n).exists()]
+    return {"undone": len(undo), "ok": ok, "skipped": skipped, "icons": icons,
+            "icons_total": len(point.icons), "auto_arrange": auto, "missing": missing}
+
+
+def last_log() -> Path | None:
+    """Ultimo riordino non ancora annullato."""
+    active = [p for p in list_points() if p.kind == "riordino" and not p.undone]
+    return active[-1].path if active else None
+
+
+def undo_last() -> tuple[int, int, str]:
+    active = [p for p in list_points() if p.kind == "riordino" and not p.undone]
+    if not active:
+        return 0, 0, ""
+    res = restore_to(active[-1])
+    return res["ok"], res["skipped"], active[-1].when.isoformat(timespec="seconds")
 
 
 def send_to_recycle_bin(paths: list[Path]) -> tuple[int, list[str]]:
