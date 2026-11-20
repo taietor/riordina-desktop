@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Riordina Desktop (finestra)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/riordina_desktop.pyw",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Anteprima da terminale (non sposta nulla)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/riordina_core.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Test",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tests/test_core.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
