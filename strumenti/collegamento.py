@@ -148,14 +148,73 @@ def remove_shortcuts() -> list[Path]:
     return removed
 
 
+# ---------------------------------------------------------------- "App installate" di Windows
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\RiordinaDesktop"
+
+
+def installed_copy() -> bool:
+    """Vero solo per la copia messa da installa.ps1 (mai per la cartella di sviluppo)."""
+    programs = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs"
+    try:
+        return ROOT.resolve().is_relative_to(programs.resolve())
+    except OSError:
+        return False
+
+
+def register_uninstall() -> None:
+    import winreg
+    sys.path.insert(0, str(ROOT))
+    from riordina_core import __version__
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as k:
+        for name, value in {
+            "DisplayName": NAME, "DisplayVersion": __version__, "Publisher": "taietor",
+            "DisplayIcon": str(ICON), "InstallLocation": str(ROOT),
+            "UninstallString": f'"{pythonw()}" "{Path(__file__).resolve()}" --disinstalla',
+            "URLInfoAbout": "https://github.com/taietor/riordina-desktop",
+        }.items():
+            winreg.SetValueEx(k, name, 0, winreg.REG_SZ, value)
+        winreg.SetValueEx(k, "NoModify", 0, winreg.REG_DWORD, 1)
+        winreg.SetValueEx(k, "NoRepair", 0, winreg.REG_DWORD, 1)
+
+
+def uninstall() -> None:
+    import tkinter as tk
+    from tkinter import messagebox
+    root = tk.Tk()
+    root.withdraw()
+    if not messagebox.askyesno(f"Disinstalla {NAME}", f"Vuoi togliere {NAME} dal PC?\n\n"
+                               "I file che hai riordinato restano dove sono."):
+        return
+    remove_shortcuts()
+    try:
+        import winreg
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY)
+    except OSError:
+        pass
+    if installed_copy():  # la cartella si cancella appena questo processo si chiude
+        subprocess.Popen(f'cmd /c timeout /t 2 /nobreak >nul & rmdir /s /q "{ROOT}"',
+                         creationflags=0x08000000, close_fds=True, cwd=os.environ.get("TEMP"))
+    messagebox.showinfo(NAME, f"{NAME} è stato disinstallato.")
+    root.destroy()
+
+
 def main() -> None:
-    sys.stdout.reconfigure(encoding="utf-8")
+    if sys.stdout:
+        sys.stdout.reconfigure(encoding="utf-8")
+    if "--disinstalla" in sys.argv:
+        return uninstall()
     if "--rimuovi" in sys.argv:
         for p in remove_shortcuts():
             print(f"Collegamento rimosso: {p}")
         return
+    if os.environ.get("RIORDINA_TEST_DIR"):  # prove di installa.ps1: Desktop e registro non si toccano
+        print(f"Icona: {make_icon()}  (prova: niente collegamenti)")
+        return
     for p in create_shortcuts():
         print(f"Collegamento creato: {p}")
+    if installed_copy():
+        register_uninstall()
+        print("Registrato in Impostazioni → App installate")
     print(f"Icona: {ICON}")
 
 

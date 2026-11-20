@@ -35,7 +35,9 @@ except ImportError:
     PdfReader = None
 
 APP_NAME = "Riordina Desktop"
-APP_DIR = Path(__file__).resolve().parent
+__version__ = "1.0.0"
+FROZEN = getattr(sys, "frozen", False)  # True dentro l'exe di PyInstaller
+APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "RiordinaDesktop"
 LOG_DIR = DATA_DIR / "registro"
 CONFIG_FILE = DATA_DIR / "impostazioni.json"
@@ -490,7 +492,7 @@ def classify_shortcut(item: Item) -> tuple[str, str]:
     exe = Path(item.target).name.lower() if item.target and not target_low.startswith(("http", "steam")) else ""
     haystack = f"{name} {Path(exe).stem}"
 
-    if "riordina_desktop" in (target_low + " " + item.args.lower()):
+    if re.search(r"riordina[ _-]?(desktop|installa)", target_low + " " + item.args.lower()):
         return KEEP, "è il collegamento a questo programma"
     if item.ext == ".lnk" and (exe in WEBAPP_EXES or "--app-id" in item.args or "--app=" in item.args):
         return "Siti e App Web", "app web installata dal browser"

@@ -5,11 +5,33 @@ ben organizzate, con anteprima, consigli e annullamento. Tutto in locale, solo l
 
 ![icona](riordina.ico)
 
-## Avvio
+## Installare (Windows 10/11)
+
+**Metodo consigliato — un comando.** Apri **PowerShell** (tasto Start → scrivi "PowerShell" → Invio),
+incolla questa riga e premi Invio:
+
+```powershell
+irm https://raw.githubusercontent.com/taietor/riordina-desktop/main/installa.ps1 | iex
+```
+
+Installa Python se manca (solo per il tuo utente), scarica il programma in
+`%LOCALAPPDATA%\Programs\Riordina Desktop`, crea i collegamenti sul Desktop e nel menu Start e lo apre.
+Niente permessi di amministratore. Funziona anche con **Smart App Control** attivo.
+Rilanciare lo stesso comando aggiorna all'ultima versione.
+Per toglierlo: *Impostazioni → App → App installate → Riordina Desktop → Disinstalla*.
+
+**In alternativa — file .exe.** Dalla pagina [Releases](https://github.com/taietor/riordina-desktop/releases)
+scarica `Riordina-Installa.exe` e fai doppio clic (non serve Python). L'exe non è firmato digitalmente:
+- Windows può mostrare "PC protetto da Windows" → *Ulteriori informazioni* → *Esegui comunque*;
+- se sul PC è attivo **Smart App Control** l'exe viene bloccato del tutto: usa il comando qui sopra.
+
+## Avvio (sviluppo)
 - Collegamento **Riordina Desktop** sul Desktop o nel menu Start.
 - Oppure: `pythonw riordina_desktop.pyw`
 - Per (ri)creare icona e collegamenti: `python strumenti/collegamento.py`
   (`--rimuovi` per toglierli). Va rifatto se sposti la cartella del progetto.
+- Per costruire l'exe: `python -m venv .venv`, `.venv\Scripts\pip install pyinstaller`,
+  `.venv\Scripts\python strumenti\build.py` → `dist\Riordina-Installa.exe`.
 
 ## Come funziona
 1. All'avvio analizza il Desktop (anche quello "pubblico" di tutti gli utenti) e propone una struttura:
@@ -37,9 +59,13 @@ Come classifica:
 ## Struttura
 | File | Cosa fa |
 |---|---|
-| `riordina_desktop.pyw` | interfaccia grafica (tkinter) |
+| `riordina_desktop.pyw` | avvio senza terminale (doppio clic / collegamento) |
+| `riordina_gui.py` | interfaccia grafica (tkinter) |
 | `riordina_core.py` | motore: scansione, regole, consigli, spostamenti, annulla. `python riordina_core.py` stampa solo l'anteprima |
-| `strumenti/collegamento.py` | disegna `riordina.ico` e crea i collegamenti Desktop/Start |
+| `installa.ps1` | installazione con un comando (Python + download + collegamenti + "App installate") |
+| `installa.py` | punto d'ingresso dell'exe: si installa, apre l'app, `--disinstalla` |
+| `strumenti/collegamento.py` | disegna `riordina.ico`, crea i collegamenti Desktop/Start, `--disinstalla` |
+| `strumenti/build.py` | costruisce `dist/Riordina-Installa.exe` con PyInstaller |
 | `tests/test_core.py` | prova spostamento + annullamento su una cartella temporanea |
 
 Facoltativi: `pip install pypdf` (legge meglio i PDF), `pip install pillow` (anteprima JPG/WEBP).
